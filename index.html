@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>SQUAT CLUB 深蹲俱樂部</title>
 <script src="https://cdn.tailwindcss.com"></script>
+<!-- Firebase (Realtime Database) — 用來讓大家的打卡狀態即時同步 -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@500;700;900&family=Archivo+Black&family=DM+Mono:wght@500&display=swap" rel="stylesheet">
 <style>
@@ -105,15 +108,25 @@
       document.getElementById('dateWeekday').textContent = zhWeekdays[now.getDay()];
     })();
 
-    // ---------- Member data ----------
-    const members = [
-      { name: 'Debby', color: '#B23A2C', goal: 10, checked: false, time: null },
-      { name: '阿簡', color: '#3C6E52', goal: 10, checked: true,  time: '14:45' },
-      { name: '邱', color: '#3A5A8C', goal: 10, checked: false, time: null },
-      { name: '', color: '#C9792F', goal: 10, checked: false, time: null },
-    ];
+    // ---------- Firebase 設定 ----------
+    const firebaseConfig = {
+      apiKey: "AIzaSyCoPdRrjoxLKA-IMALuHJtK08zOYXKG4TY",
+      authDomain: "squat-975f7.firebaseapp.com",
+      databaseURL: "https://squat-975f7-default-rtdb.asia-southeast1.firebasedatabase.app/",
+      projectId: "squat-975f7",
+    };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
 
-    const list = document.getElementById('cardList');
+    // 用「今天日期」當作打卡紀錄的節點，這樣每天的打卡狀態會自動分開存放
+    function todayKey(){
+      const d = new Date();
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
+    const dayRef = db.ref('checkins/' + todayKey());
 
     function nowTime(){
       const d = new Date();
@@ -122,7 +135,18 @@
       return `${hh}:${mm}`;
     }
 
-    function renderCard(member, index){
+    // ---------- 朋友名單（顏色、目標次數固定寫在這裡；打卡狀態存在 Firebase） ----------
+    const membersBase = [
+      { name: 'Debby', color: '#B23A2C', goal: 10 },
+      { name: '阿簡', color: '#3C6E52', goal: 10 },
+      { name: '邱', color: '#3A5A8C', goal: 10 },
+      { name: '', color: '#C9792F', goal: 10 },
+    ];
+
+    const list = document.getElementById('cardList');
+    const cardRefs = {}; // name -> { statusEl, stampZone, inputEl }
+
+    function createCardSkeleton(member){
       const card = document.createElement('div');
       card.className = 'flex rounded-xl overflow-hidden border-2 border-[var(--ink)] bg-[var(--card)] card-shadow';
 
@@ -137,7 +161,7 @@
           <input
             type="text"
             placeholder="嗆一句…"
-            class="w-full bg-transparent border border-dashed border-[var(--ink)]/40 rounded-full px-3 py-1.5 text-sm placeholder-[var(--ink)]/40 focus:outline-none focus:border-[var(--stamp-red)]"
+            class="quote-input w-full bg-transparent border border-dashed border-[var(--ink)]/40 rounded-full px-3 py-1.5 text-sm placeholder-[var(--ink)]/40 focus:outline-none focus:border-[var(--stamp-red)]"
           />
           <div>
             <span class="inline-block border border-[var(--ink)] rounded-full px-4 py-1 text-sm font-semibold">
@@ -153,58 +177,77 @@
 
       const statusEl = card.querySelector('.status-text');
       const stampZone = card.querySelector('.stamp-zone');
+      const inputEl = card.querySelector('.quote-input');
 
-      function renderStatus(){
-        if(member.checked){
-          statusEl.innerHTML = `<button class="cancel-btn underline underline-offset-2 hover:text-[var(--stamp-red)] transition-colors">蓋錯了？取消打卡</button>`;
-          statusEl.querySelector('.cancel-btn').addEventListener('click', (e) => {
-            e.stopPropagation();
-            member.checked = false;
-            member.time = null;
-            renderStatus();
-            renderStamp();
-          });
-        } else {
-          statusEl.textContent = '尚未打卡';
-        }
-      }
-
-      function renderStamp(){
-        if(member.checked){
-          stampZone.innerHTML = `
-            <div class="stamp-enter flex flex-col items-center">
-              <div class="w-20 h-20 rounded-full border-4 border-[var(--stamp-red)] flex flex-col items-center justify-center -rotate-12">
-                <span class="text-[var(--stamp-red)] font-display text-base leading-none">達成</span>
-                <span class="text-[var(--stamp-red)] font-mono text-[10px] tracking-widest mt-1">SQUAT!</span>
-              </div>
-              <span class="text-[var(--stamp-red)] font-mono text-xs mt-1">${member.time} 蓋章</span>
-            </div>
-          `;
-        } else {
-          stampZone.innerHTML = `
-            <div class="dashed-hover w-20 h-20 rounded-full border-2 border-dashed border-[var(--ink)]/40 flex flex-col items-center justify-center transition-colors">
-              <span class="text-[var(--ink)]/50 text-sm font-semibold">蓋章</span>
-              <span class="text-[var(--ink)]/40 text-[11px] mt-0.5">按此打卡</span>
-            </div>
-          `;
-        }
-      }
-
+      // 點蓋章 → 寫入 Firebase（畫面不用自己更新，onValue 監聽器收到變化會自動重繪）
       stampZone.addEventListener('click', () => {
-        if(!member.checked){
-          member.checked = true;
-          member.time = nowTime();
-          renderStatus();
-          renderStamp();
-        }
+        dayRef.child(member.name).update({
+          checked: true,
+          time: nowTime(),
+        });
       });
 
-      renderStatus();
-      renderStamp();
+      // 打字打完（失焦）才把「嗆一句」寫進 Firebase，避免每打一個字就送出一次請求
+      inputEl.addEventListener('blur', () => {
+        dayRef.child(member.name).update({ quote: inputEl.value });
+      });
+
+      cardRefs[member.name] = { statusEl, stampZone, inputEl };
       return card;
     }
 
-    members.forEach((m, i) => list.appendChild(renderCard(m, i)));
+    // 依照 state（來自 Firebase）畫出單一朋友的卡片內容
+    function renderCardState(member, state){
+      const { statusEl, stampZone, inputEl } = cardRefs[member.name];
+      const checked = !!(state && state.checked);
+
+      // 狀態文字
+      if(checked){
+        statusEl.innerHTML = `<button class="cancel-btn underline underline-offset-2 hover:text-[var(--stamp-red)] transition-colors">蓋錯了？取消打卡</button>`;
+        statusEl.querySelector('.cancel-btn').addEventListener('click', (e) => {
+          e.stopPropagation();
+          dayRef.child(member.name).update({ checked: false, time: null });
+        });
+      } else {
+        statusEl.textContent = '尚未打卡';
+      }
+
+      // 蓋章區域
+      if(checked){
+        stampZone.innerHTML = `
+          <div class="stamp-enter flex flex-col items-center">
+            <div class="w-20 h-20 rounded-full border-4 border-[var(--stamp-red)] flex flex-col items-center justify-center -rotate-12">
+              <span class="text-[var(--stamp-red)] font-display text-base leading-none">達成</span>
+              <span class="text-[var(--stamp-red)] font-mono text-[10px] tracking-widest mt-1">SQUAT!</span>
+            </div>
+            <span class="text-[var(--stamp-red)] font-mono text-xs mt-1">${state.time || ''} 蓋章</span>
+          </div>
+        `;
+      } else {
+        stampZone.innerHTML = `
+          <div class="dashed-hover w-20 h-20 rounded-full border-2 border-dashed border-[var(--ink)]/40 flex flex-col items-center justify-center transition-colors">
+            <span class="text-[var(--ink)]/50 text-sm font-semibold">蓋章</span>
+            <span class="text-[var(--ink)]/40 text-[11px] mt-0.5">按此打卡</span>
+          </div>
+        `;
+      }
+
+      // 「嗆一句」的輸入框：只有在使用者目前沒有正在打字時才覆蓋，避免打字被中斷
+      if(document.activeElement !== inputEl){
+        inputEl.value = (state && state.quote) || '';
+      }
+    }
+
+    // 先把卡片骨架畫出來
+    membersBase.forEach(m => list.appendChild(createCardSkeleton(m)));
+
+    // 監聽 Firebase：只要有人打卡、取消、或改嗆聲內容，所有人畫面都會即時更新
+    dayRef.on('value', (snapshot) => {
+      const data = snapshot.val() || {};
+      membersBase.forEach(m => {
+        renderCardState(m, data[m.name]);
+      });
+    });
   </script>
 </body>
 </html>
